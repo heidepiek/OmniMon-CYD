@@ -5,7 +5,7 @@
 
 const int CURRENT_WEATHER_INTERVAL      = 10 * MINUTES_MULT;
 const int PRINT_MONITOR_INERVAL         = 30 * SECONDS_MULT;
-const int DISPLAY_CYCLE_INERVAL         = 10* SECONDS_MULT;
+const int DISPLAY_CYCLE_INERVAL         = 30 * SECONDS_MULT;
 
 // TODO, calculate sizes
 const int PRINTER_JSON_SIZE  = 512;           
@@ -122,6 +122,7 @@ void SettingsManager::loadPrinters()
         printer->apiKey = (const char*)doc["APIKey"];
         printer->displayName = (const char*)doc["DisplayName"];
         printer->enabled = doc["Enabled"];
+        printer->isMoonraker = doc["IsMoonraker"];
 
         printerSettings.close();
 
@@ -189,6 +190,7 @@ void SettingsManager::savePrinters()
         doc["APIKey"] = printer->apiKey;
         doc["DisplayName"] = printer->displayName;
         doc["Enabled"] = printer->enabled;
+        doc["IsMoonraker"] = printer->isMoonraker;
 
         printerSettings = SPIFFS.open(buffer, "w");
         if(printerSettings)
@@ -340,7 +342,7 @@ OctoPrinterData* SettingsManager::getPrinterData(int printerNum)
     return printersData[printerNum];
 }
 
-void SettingsManager::addNewPrinter(String address, int port, String userName, String password, String apiKey, String displayName, bool enabled)
+void SettingsManager::addNewPrinter(String address, int port, String userName, String password, String apiKey, String displayName, bool enabled, bool isMoonraker)
 {
     OctoPrinterData* newPrinter = printersData[data.numPrinters];
 
@@ -351,12 +353,13 @@ void SettingsManager::addNewPrinter(String address, int port, String userName, S
     newPrinter->apiKey = apiKey;
     newPrinter->displayName = displayName;
     newPrinter->enabled = enabled;
+    newPrinter->isMoonraker = isMoonraker;
     data.numPrinters++;
 
     updateSettings();
 }
 
-void SettingsManager::editPrinter(int printerNum, String address, int port, String userName, String password, String apiKey, String displayName, bool enabled)
+void SettingsManager::editPrinter(int printerNum, String address, int port, String userName, String password, String apiKey, String displayName, bool enabled, bool isMoonraker)
 {
     OctoPrinterData* printer = printersData[printerNum];
 
@@ -367,6 +370,7 @@ void SettingsManager::editPrinter(int printerNum, String address, int port, Stri
     printer->apiKey = apiKey;
     printer->displayName = displayName;
     printer->enabled = enabled;
+    printer->isMoonraker = isMoonraker;
 
     updateSettings();
 }

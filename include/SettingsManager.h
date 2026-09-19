@@ -2,9 +2,9 @@
 #define _settingsmanager_h
 
 #include <ArduinoJson.h>
+#include <SPIFFS.h>
 #include "DisplayBase.h"
 #include "Settings.h"
-#include <SPIFFS.h>
 
 const String SETTINGS_FILE_NAME = "/Settings.json";
 
@@ -50,6 +50,7 @@ typedef struct OctoPrinterData
     String apiKey;
     String displayName;
     bool enabled;
+    bool isMoonraker;   // false = genuine OctoPrint (e.g. Marlin), true = Moonraker's native API (Klipper)
 } OctoPrinterData;
 
 class SettingsManager
@@ -83,8 +84,8 @@ class SettingsManager
         int getNumPrinters();
         int getNumEnabledPrinters();
         OctoPrinterData* getPrinterData(int printerNum);
-        void addNewPrinter(String address, int port, String userName, String password, String apiKey, String displayName, bool enabled);
-        void editPrinter(int printerNum, String address, int port, String userName, String password, String apiKey, String displayName, bool enabled);
+        void addNewPrinter(String address, int port, String userName, String password, String apiKey, String displayName, bool enabled, bool isMoonraker);
+        void editPrinter(int printerNum, String address, int port, String userName, String password, String apiKey, String displayName, bool enabled, bool isMoonraker);
         void deletePrinter(int printerNum);
 
         long getUtcOffset();

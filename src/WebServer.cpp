@@ -198,7 +198,7 @@ void WebServer::updateCurrentWeather(OpenWeatherMapCurrentData* currentWeather)
     String output;
 
     const size_t capacity = 1024;   // TODO
-    JsonDocument jsonDoc;
+    DynamicJsonDocument jsonDoc(capacity);
 
     jsonDoc["type"] = "currentWeather";
 
@@ -223,7 +223,7 @@ void WebServer::updateCurrentWeather(OpenWeatherMapCurrentData* currentWeather)
 void WebServer::updatePrintMonitorInfo(OctoPrintMonitorData* printerInfo, String printerName, bool enabled)
 {
     const size_t capacity = 512;  
-    JsonDocument jsonDoc;
+    DynamicJsonDocument jsonDoc(capacity);
     String output;
 
     jsonDoc["type"] = "monitorInfo";
@@ -365,25 +365,36 @@ String WebServer::tokenProcessor(const String& token)
 String WebServer::createPrinterList()
 {
     int numPrinters = settingsManager->getNumPrinters();
-    String response = "";
+    String response;
 
+    // lots of string use here, bad?
     for(int i=0; i<numPrinters; i++)
     {
+        String printerRow;
         OctoPrinterData* data = settingsManager->getPrinterData(i);
-        if(data == nullptr) continue;
+        const char deleteButton[] = "<button type='button' class='btn btn-danger mr-2 confirmDeletePrinter'>Delete</button>";
+        const char editButton[] = "<button type='button' class='btn btn-primary mr-2' data-toggle='modal' data-backdrop='static' data-target='#editPrinterModal'>Edit</button>";
+        const char enabledBox[] = "<td><input type='checkbox' disabled checked></td>";
+        const char disabledBox[] = "<td><input type='checkbox' disabled></td>";
+        const char *checkbox;
 
-        String deleteButton = "<button type='button' class='btn btn-danger mr-2 confirmDeletePrinter'>Delete</button>";
-        String editButton = "<button type='button' class='btn btn-primary mr-2' data-toggle='modal' data-backdrop='static' data-target='#editPrinterModal'>Edit</button>";
-        String checkbox = data->enabled ? "<td><input type='checkbox' disabled checked></td>" : "<td><input type='checkbox' disabled></td>";
-
-        String printerRow = "<tr>";
-        printerRow += "<class='printer-id'>" + String(i + 1) + "</td>";
-        printerRow += "<td class='display-name'>" + data->displayName + "</td>";
-        printerRow += "<td>" + data->address + "</td>";
-        printerRow += "<td>" + String(data->port) + "</td>";
-        printerRow += checkbox;
-        printerRow += "<td>" + editButton + deleteButton + "</td>";
-        printerRow += "</tr>";
+        if(data->enabled)
+        {
+            checkbox = enabledBox;
+        }
+        else
+        {
+            checkbox = disabledBox;
+        }
+        
+        // Built with String concatenation rather than sprintf() into a fixed buffer:
+        // the constant HTML alone (editButton + deleteButton + checkbox + skeleton) is
+        // already ~373 bytes, comfortably over the old 256-byte buffer - it overflowed
+        // the stack on every single printer row, which is what caused the ESP32 crash
+        // ("Stack smashing protect failure") when opening the printer settings page.
+        printerRow = "<tr><td class='printer-id'>" + String(i+1) + "</td><td class='display-name'>" +
+            data->displayName + "</td><td>" + data->address + "</td><td>" + String(data->port) + "</td>" +
+            String(checkbox) + "<td>" + String(editButton) + String(deleteButton) + "</td></tr>";
 
         response += printerRow;
     }
@@ -427,16 +438,15 @@ String WebServer::createDisplayList()
 String WebServer::createDisplayButton(int id, String checked, String title)
 {
     String button;
-    char buffer[256];
     const char buttonHeader[] = "<div class='form-group'><div class='form-check'><label class='form-check-label'>";
-    const char buttonInfo[] = "<input type='radio' class='form-check-input' value='%d' name='optdisplay' %s>%s";
     const char buttonFooter[] = "</label></div></div>";
-    
-    sprintf(buffer, buttonInfo, id, checked.c_str(), title.c_str());
-    
-    button += buttonHeader;
-    button += buffer;
-    button += buttonFooter;
+
+    // Built with String concatenation instead of sprintf() into a fixed buffer:
+    // 'title' is a user-entered printer display name with no length limit, so a
+    // long enough name would have overflowed the old fixed 256-byte buffer here too.
+    button = String(buttonHeader) +
+        "<input type='radio' class='form-check-input' value='" + String(id) + "' name='optdisplay' " + checked + ">" + title +
+        String(buttonFooter);
 
     return button;
 }
@@ -547,10 +557,16 @@ void WebServer::handleUpdateClockSettings(AsyncWebServerRequest* request)
 void WebServer::handleAddNewPrinter(AsyncWebServerRequest* request)
 {
     bool enabled = false;
+    bool isMoonraker = false;
 
     if(request->hasParam("printerEnabled"))
     {
         enabled = true;
+    }
+
+    if(request->hasParam("printerIsMoonraker"))
+    {
+        isMoonraker = true;
     }
 
     settingsManager->addNewPrinter(
@@ -560,7 +576,8 @@ void WebServer::handleAddNewPrinter(AsyncWebServerRequest* request)
         request->getParam("octoPrintPassword")->value(),
         request->getParam("octoPrintAPIKey")->value(),
         request->getParam("octoPrintDisplayName")->value(),
-        enabled
+        enabled,
+        isMoonraker
     );
 }
 
@@ -578,6 +595,7 @@ void WebServer::handleEditPrinter(AsyncWebServerRequest* request)
 {
     int printerId;
     bool enabled = false;
+    bool isMoonraker = false;
 
     printerId = request->getParam("printerId")->value().toInt(); 
     printerId--;
@@ -585,6 +603,11 @@ void WebServer::handleEditPrinter(AsyncWebServerRequest* request)
     if(request->hasParam("editEnabled"))
     {
         enabled = true;
+    }
+
+    if(request->hasParam("editIsMoonraker"))
+    {
+        isMoonraker = true;
     }
 
     settingsManager->editPrinter(
@@ -595,34 +618,24 @@ void WebServer::handleEditPrinter(AsyncWebServerRequest* request)
         request->getParam("editPassword")->value(),
         request->getParam("editAPIKey")->value(),
         request->getParam("editDisplayName")->value(),
-        enabled
+        enabled,
+        isMoonraker
     );
 }
 
 void WebServer::handleGetPrinter(AsyncWebServerRequest* request)
 {
-    if (!request->hasParam("printerId")) {
-        request->send(400, "text/plain", "Missing printerId");
-        return;
-    }
+    AsyncWebParameter* p = request->getParam("printerId");
+    int printerID;
 
-    int printerID = request->getParam("printerId")->value().toInt();
+    printerID = p->value().toInt();
     printerID--;
 
-    // Extra beveiliging: controleer of het ID binnen het geldige bereik valt
-    if (printerID < 0 || printerID >= settingsManager->getNumPrinters()) {
-        request->send(400, "text/plain", "Invalid printerId");
-        return;
-    }
-
     OctoPrinterData* printer = settingsManager->getPrinterData(printerID);
-    if (printer == nullptr) {
-        request->send(404, "text/plain", "Printer not found");
-        return;
-    }
 
-    JsonDocument doc;
-    String response;
+    const size_t capacity = 512;  
+    DynamicJsonDocument doc(capacity);
+    String reponse;
 
     doc["address"] = printer->address;
     doc["port"] = printer->port;
@@ -631,10 +644,11 @@ void WebServer::handleGetPrinter(AsyncWebServerRequest* request)
     doc["apiKey"] = printer->apiKey;
     doc["displayName"] = printer->displayName;
     doc["enabled"] = printer->enabled;
+    doc["isMoonraker"] = printer->isMoonraker;
 
-    serializeJson(doc, response);
+    serializeJson(doc, reponse);
 
-    request->send(200, "application/json", response);
+    request->send(200, "application/json", reponse);
 }
 
 void WebServer::handleForgetWiFi(AsyncWebServerRequest* request)

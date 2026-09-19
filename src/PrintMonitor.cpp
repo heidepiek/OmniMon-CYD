@@ -2,7 +2,8 @@
 #include <ArduinoOTA.h>
 #include <TaskScheduler.h>
 #include <NTPClient.h>
-#include <WiFi.h>
+#include <WiFi.h>          // was <ESP8266WiFi.h>
+#include <SPIFFS.h>        // ESP32 needs this included explicitly; ESP8266 pulled it in via FS.h automatically
 #include <WiFiUdp.h>
 #include <ESPAsyncWifiManager.h>
 #include "OpenWeatherMapCurrent.h"
@@ -61,22 +62,22 @@ void getCurrentWeatherCallback()
 
 void updatePrinterMonitorCallback()
 {
-    // Voorkom crash als er geen geldige printer is geselecteerd
-    if (currentPrinter < 0 || currentPrinter >= settingsManager.getNumPrinters()) 
-    {
-        return;
-    }
-
     OctoPrinterData* printerData = settingsManager.getPrinterData(currentPrinter);
 
-    if(printerData && printerData->enabled)
+#ifdef TIMING_DEBUG
+    Serial.print("[TIMING] --- updating printer: ");
+    Serial.print(printerData->displayName);
+    Serial.println(" ---");
+#endif
+
+    if(printerData->enabled)
     {
-        octoPrintMonitor.setCurrentPrinter(printerData->address, printerData->port, printerData->apiKey, printerData->username, printerData->password);
+        octoPrintMonitor.setCurrentPrinter(printerData->address, printerData->port, printerData->apiKey, printerData->username, printerData->password, printerData->isMoonraker);
         octoPrintMonitor.update();
-        
-        display->drawOctoPrintStatus(octoPrintMonitor.getCurrentData(), printerData->displayName, printerData->enabled);
-        webServer.updatePrintMonitorInfo(octoPrintMonitor.getCurrentData(), printerData->displayName, printerData->enabled);
     }
+    
+    display->drawOctoPrintStatus(octoPrintMonitor.getCurrentData(), printerData->displayName, printerData->enabled);
+    webServer.updatePrintMonitorInfo(octoPrintMonitor.getCurrentData(), printerData->displayName, printerData->enabled);
 
     Serial.println("updatePrinterMonitorCallback");
 }
@@ -299,15 +300,13 @@ void setup()
 {
     Serial.begin(115200);
 
-    if (!SPIFFS.begin(true)) {
-        Serial.println("SPIFFS Mount Failed - Formatted successfully now");
-    }
+    SPIFFS.begin();
 
     display = new DisplayTFT();
 
     currentWeatherClient.setLanguage("en");
 
-    WiFi.hostname("OctoPrint-Monitor");
+    WiFi.setHostname("OctoPrint-Monitor"); // was WiFi.hostname(...) - ESP32's WiFi lib names this method differently
 
     taskScheduler.startNow(); 
     taskScheduler.addTask(connectWifi);

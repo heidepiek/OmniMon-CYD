@@ -1,14 +1,18 @@
 #ifndef _octoPrintMonitor_h
 #define _octoPrintMonitor_h
 
-#include <AsyncTCP.h>
+#include <AsyncTCP.h>       // was <ESPAsyncTCP.h> - that's the ESP8266-only variant
 #include <ESPAsyncWebServer.h>
 
-// NOTE: Moonraker's [octoprint_compat] "/api/job" always returns null job/progress
-// data by design (only "/api/printer" is properly implemented there for temps).
-// So job/progress info is fetched from Moonraker's own native API instead - this
-// needs no extra install or config on the printer beyond the API key you already set up.
-#define OCTOPRINT_JOB       "/printer/objects/query?print_stats&virtual_sdcard"
+// Comment out this line (add // in front) to remove all [TIMING] Serial output.
+//#define TIMING_DEBUG
+
+// Both real OctoPrint (Marlin) and Moonraker's own native API are supported now,
+// selected per printer via the isMoonraker flag passed to setCurrentPrinter() -
+// earlier this file hardcoded the Moonraker endpoint for every printer, which broke
+// job info (progress/filename/filament) on printers that are genuine OctoPrint/Marlin.
+#define OCTOPRINT_JOB       "/api/job"
+#define MOONRAKER_JOB       "/printer/objects/query?print_stats&virtual_sdcard"
 #define OCTOPRINT_PRINTER   "/api/printer?exclude=sd"
 
 #define PRINT_STATE_CANCELLING          1
@@ -51,7 +55,7 @@ class OctoPrintMonitor
 {
     public:
         //void init(String server, int port, String apiKey, String userName, String password);
-        void setCurrentPrinter(String server, int port, String apiKey, String userName, String password);
+        void setCurrentPrinter(String server, int port, String apiKey, String userName, String password, bool isMoonraker);
         void update();
         OctoPrintMonitorData* getCurrentData() { return &data; }
 
@@ -59,7 +63,8 @@ class OctoPrintMonitor
         void updateJobStatus();
         void updatePrinterStatus();
         int performAPIGet(String apiCall, String& payload);
-        void deserialiseJob(String payload);
+        void deserialiseJobOctoPrint(String payload);
+        void deserialiseJobMoonraker(String payload);
         void deserialisePrint(String payload);
 
         String apiKey;
@@ -67,6 +72,7 @@ class OctoPrintMonitor
         String userName;
         String password;
         int port;
+        bool isMoonraker;
 
         OctoPrintMonitorData data;
 };

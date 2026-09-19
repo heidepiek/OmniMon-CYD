@@ -1,6 +1,6 @@
 #include <WiFiClient.h>
-#include <WiFi.h>
-#include <HTTPClient.h>
+#include <WiFi.h>          // was <ESP8266WiFi.h>
+#include <HTTPClient.h>    // was <ESP8266HTTPClient.h>
 #include <ArduinoJson.h>
 #include <string.h>
 #include "OctoPrintMonitor.h"
@@ -8,13 +8,14 @@
 const int JOB_DECODE_SIZE   = 1536;   // TODO (Moonraker response, includes result/status wrapper)
 const int PRINT_DECODE_SIZE = 2048;   // TODO
 
-void OctoPrintMonitor::setCurrentPrinter(String server, int port, String apiKey, String userName, String password)
+void OctoPrintMonitor::setCurrentPrinter(String server, int port, String apiKey, String userName, String password, bool isMoonraker)
 {
     this->apiKey = apiKey;
     this->server = server;
     this->userName = userName;
     this->password = password;
     this->port = port;
+    this->isMoonraker = isMoonraker;
 }
 
 void OctoPrintMonitor::update()
@@ -27,13 +28,31 @@ void OctoPrintMonitor::updateJobStatus()
 {
     String result;
     int httpCode;
-    
-    httpCode = performAPIGet(OCTOPRINT_JOB, result);
+#ifdef TIMING_DEBUG
+    unsigned long startTime = millis();
+#endif
+
+    httpCode = performAPIGet(isMoonraker ? MOONRAKER_JOB : OCTOPRINT_JOB, result);
+
+#ifdef TIMING_DEBUG
+    Serial.print("[TIMING] updateJobStatus (");
+    Serial.print(isMoonraker ? "Moonraker" : "OctoPrint");
+    Serial.print(") took ");
+    Serial.print(millis() - startTime);
+    Serial.println("ms");
+#endif
     
     if(httpCode == 200)
     {
         data.validJobData = true;
-        deserialiseJob(result);
+        if(isMoonraker)
+        {
+            deserialiseJobMoonraker(result);
+        }
+        else
+        {
+            deserialiseJobOctoPrint(result);
+        }
     }
     else
     {
@@ -45,8 +64,17 @@ void OctoPrintMonitor::updatePrinterStatus()
 {
     String result;
     int httpCode;
+#ifdef TIMING_DEBUG
+    unsigned long startTime = millis();
+#endif
 
     httpCode = performAPIGet(OCTOPRINT_PRINTER, result);
+
+#ifdef TIMING_DEBUG
+    Serial.print("[TIMING] updatePrinterStatus took ");
+    Serial.print(millis() - startTime);
+    Serial.println("ms");
+#endif
     
      if(httpCode == 200)
     {
@@ -66,7 +94,8 @@ int OctoPrintMonitor::performAPIGet(String apiCall, String& payload)
     HTTPClient http;
 
     http.begin(client, this->server, this->port, apiCall);
-    http.setTimeout(2000);
+    http.setConnectTimeout(1500);  // caps the TCP connect phase - setTimeout() below doesn't cover this on ESP32
+    http.setTimeout(2000);         // caps waiting for a response once connected
     http.addHeader("X-Api-Key", this->apiKey);
 
     if(this->userName != "")
@@ -90,19 +119,42 @@ int OctoPrintMonitor::performAPIGet(String apiCall, String& payload)
     return httpCode;
 }
 
-void OctoPrintMonitor::deserialiseJob(String payload)
+void OctoPrintMonitor::deserialiseJobOctoPrint(String payload)
 {
-    if (payload.length() == 0) return;
+    // Genuine OctoPrint (Marlin, or any other firmware OctoPrint itself drives)
+    // response shape: { "job": { "file": {...}, ... }, "progress": {...}, "state": ... }
+    DynamicJsonDocument doc(JOB_DECODE_SIZE);
+    deserializeJson(doc, payload);
 
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, payload);
-    if (error) {
-        return; // Voorkom crash bij corrupte data
+    data.jobState = (const char*)doc["state"];
+
+    const char* display = doc["job"]["file"]["display"];
+
+    if(display != nullptr)
+    {
+        data.jobLoaded = true;
+        data.estimatedPrintTime = doc["job"]["estimatedPrintTime"];
+        data.filamentLength = doc["job"]["filament"]["tool0"]["length"];
+        data.fileName = String(display);
+        
+        data.percentComplete = doc["progress"]["completion"];
+        data.printTimeElapsed = doc["progress"]["printTime"];
+        data.printTimeRemaining = doc["progress"]["printTimeLeft"];
     }
+    else
+    {
+        data.jobLoaded = false;
+    }
+}
+
+void OctoPrintMonitor::deserialiseJobMoonraker(String payload)
+{
+    // Moonraker's native response looks like:
+    // { "result": { "status": { "print_stats": {...}, "virtual_sdcard": {...} } } }
+    DynamicJsonDocument doc(JOB_DECODE_SIZE);
+    deserializeJson(doc, payload);
 
     JsonObject status = doc["result"]["status"];
-    if (status.isNull()) return;
-
     const char* filename = status["print_stats"]["filename"];
     const char* state = status["print_stats"]["state"];
 
@@ -121,6 +173,9 @@ void OctoPrintMonitor::deserialiseJob(String payload)
         data.printTimeElapsed = (unsigned int)elapsed;
         data.filamentLength   = (unsigned int)filamentUsed;
 
+        // Moonraker doesn't report an OctoPrint-style estimated/remaining time directly,
+        // so it's derived here from current progress vs elapsed time (linear estimate,
+        // same approach community tools like moonraker-octoprint-enhanced use).
         if(progress > 0.0f)
         {
             float estimatedTotal = elapsed / progress;
@@ -141,39 +196,61 @@ void OctoPrintMonitor::deserialiseJob(String payload)
 
 void OctoPrintMonitor::deserialisePrint(String payload)
 {
-    if (payload.length() == 0) return;
+    DynamicJsonDocument doc(PRINT_DECODE_SIZE);
+    deserializeJson(doc, payload);
 
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, payload);
-    if (error) {
-        return; // Voorkom crash bij corrupte data
-    }
+    data.tool0Temp = doc["temperature"]["tool0"]["actual"];
+    data.tool0Target= doc["temperature"]["tool0"]["target"];
 
-    if (doc["temperature"].isNull() || doc["state"].isNull()) return;
+    data.bedTemp = doc["temperature"]["bed"]["actual"];
+    data.bedTarget = doc["temperature"]["bed"]["target"];
 
-    data.tool0Temp = doc["temperature"]["tool0"]["actual"] | 0.0f;
-    data.tool0Target = doc["temperature"]["tool0"]["target"] | 0.0f;
-
-    data.bedTemp = doc["temperature"]["bed"]["actual"] | 0.0f;
-    data.bedTarget = doc["temperature"]["bed"]["target"] | 0.0f;
-
-    const char* stateText = doc["state"]["text"];
-    data.printState = (stateText != nullptr) ? String(stateText) : String("Unknown");
+    data.printState = (const char*)doc["state"]["text"];
     data.printerFlags = 0;
     
-    JsonObject flags = doc["state"]["flags"];
-    if(!flags.isNull())
+    if(doc["state"]["flags"]["cancelling"])
     {
-        if(flags["cancelling"]) data.printerFlags |= PRINT_STATE_CANCELLING;
-        if(flags["closedOrError"]) data.printerFlags |= PRINT_STATE_CLOSED_OR_ERROR;
-        if(flags["error"]) data.printerFlags |= PRINT_STATE_ERROR;
-        if(flags["finishing"]) data.printerFlags |= PRINT_STATE_FINISHING;
-        if(flags["operational"]) data.printerFlags |= PRINT_STATE_OPERATIONAL;
-        if(flags["paused"]) data.printerFlags |= PRINT_STATE_PAUSED;
-        if(flags["pausing"]) data.printerFlags |= PRINT_STATE_PAUSING;
-        if(flags["printing"]) data.printerFlags |= PRINT_STATE_PRINTING;
-        if(flags["ready"]) data.printerFlags |= PRINT_STATE_READY;
-        if(flags["resuming"]) data.printerFlags |= PRINT_STATE_RESUMING;
-        if(flags["sdReady"]) data.printerFlags |= PRINT_STATE_SD_READY;
+        data.printerFlags |= PRINT_STATE_CANCELLING;
+    }
+    if(doc["state"]["flags"]["closedOrError"])
+    {
+        data.printerFlags |= PRINT_STATE_CLOSED_OR_ERROR;
+    }
+    if(doc["state"]["flags"]["error"])
+    {
+        data.printerFlags |= PRINT_STATE_ERROR;
+    }
+    if(doc["state"]["flags"]["finishing"])
+    {
+        data.printerFlags |= PRINT_STATE_FINISHING;
+    }
+    if(doc["state"]["flags"]["operational"])
+    {
+        data.printerFlags |= PRINT_STATE_OPERATIONAL;
+    }
+    if(doc["state"]["flags"]["paused"])
+    {
+        data.printerFlags |= PRINT_STATE_PAUSED;
+    }
+    if(doc["state"]["flags"]["pausing"])
+    {
+        data.printerFlags |= PRINT_STATE_PAUSING;
+    }
+    if(doc["state"]["flags"]["printing"])
+    {
+        data.printerFlags |= PRINT_STATE_PRINTING;
+    }
+    if(doc["state"]["flags"]["ready"])
+    {
+        data.printerFlags |= PRINT_STATE_READY;
+    }
+    if(doc["state"]["flags"]["resuming"])
+    {
+        data.printerFlags |= PRINT_STATE_RESUMING;
+    }
+    if(doc["state"]["flags"]["sdReady"])
+    {
+        data.printerFlags |= PRINT_STATE_SD_READY;
     }
 }
+
