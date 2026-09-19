@@ -1,3 +1,6 @@
+![OmniMon-CYD Demo](OmniMon-CYD.gif)
+
+                               Left the OmniMon-CYD................Right the Klippymon
 ### 🛠️ Journey of a 3D Printing Tinker
 
 When I first got into 3D printing, bought my initial printer, and started upgrading it, I instantly fell in love with the custom peripherals built by the community. Over the years, my mancave has slowly turned into a display gallery of various printer monitors scattered around.
